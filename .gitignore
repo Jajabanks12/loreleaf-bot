@@ -1,0 +1,10 @@
+﻿.env
+notes/*
+!notes/.gitkeep
+*.pyc
+__pycache__/
+.vscode/
+.venv/
+venv/
+.DS_Store
+*.log

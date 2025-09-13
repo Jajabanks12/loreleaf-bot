@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lore Leaf — Knowledge Bot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Neutral fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- SIDEBAR -->
+    <aside class="side">
+      <div class="brand-mini">
+        <span class="logo" aria-hidden="true">🗂️</span>
+        <strong>Lore Leaf</strong>
+      </div>
+
+      <!-- Dropzone / Upload -->
+      <div class="panel">
+        <div class="panel-h">Add files</div>
+        <div id="dropzone" class="dropzone" aria-label="Drop files here">Drag & drop .md / .txt / .pdf here<br/><small class="muted">or</small><br/>
+          <button id="uploadBtn" class="btn btn-secondary btn-block" style="margin-top:.4rem">Choose files</button>
+          <input id="fileInput" type="file" multiple accept=".md,.txt,.pdf" hidden />
+        </div>
+        <div id="uploadNote" class="muted" style="margin-top:.5rem; font-size:.9rem;">Files are stored in <code>/notes</code>. Reindex will run after upload.</div>
+      </div>
+
+      <!-- Persona chips (optional if you use a select elsewhere) -->
+      <div class="panel">
+        <div class="panel-h">Answer style</div>
+        <div class="persona-chips" id="personaChips">
+          <label><input type="radio" name="p" value="neutral" checked> <span>Neutral</span></label>
+          <label><input type="radio" name="p" value="tutor"> <span>Tutor</span></label>
+          <label><input type="radio" name="p" value="analyst"> <span>Analyst</span></label>
+          <label><input type="radio" name="p" value="friendly"> <span>Friendly</span></label>
+          <label><input type="radio" name="p" value="skeptic"> <span>Skeptic</span></label>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="panel">
+        <div class="panel-h">Recent</div>
+        <ul id="history" class="history"></ul>
+      </div>
+
+      <div class="grow"></div>
+
+      <!-- Metrics + Settings -->
+      <div class="panel tiny">
+        <div class="metric"><span>Files</span><b id="m-files">—</b></div>
+        <div class="metric"><span>Chunks</span><b id="m-chunks">—</b></div>
+        <div class="metric"><span>Model</span><b id="m-model">—</b></div>
+        <button id="settingsBtn" class="btn-ghost" style="margin-top:.5rem">Settings</button>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main">
+      <header class="hero card reveal">
+        <div class="brand">
+          <h1 class="title">Ask your knowledge base</h1>
+          <p class="muted">Drop files on the left → Rebuild Index → Ask better questions.</p>
+        </div>
+        <div class="controls">
+          <button id="reindex" class="btn btn-secondary" aria-live="polite">Rebuild Index</button>
+          <span id="status" class="pill" data-state="idle">idle</span>
+        </div>
+      </header>
+
+      <section class="ask-row reveal">
+        <input id="query" class="input" type="text" placeholder="e.g., 'Summarize Q3 KPIs and risks'"/>
+        <button id="ask" class="btn">Ask</button>
+        <button id="copyAnswer" class="btn-ghost" title="Copy answer">Copy</button>
+      </section>
+
+      <section class="card reveal">
+        <div class="tabs">
+          <button class="tab active" data-tab="answer">Answer</button>
+          <button class="tab" data-tab="sources">Sources</button>
+          <button class="tab" data-tab="chunks">Chunks</button>
+        </div>
+
+        <div id="tab-answer" class="tabpane active">
+          <div id="out" class="answer card-subtle" style="display:none;" aria-live="polite"></div>
+          <div class="answer-actions">
+            <button id="exportMd" class="btn-ghost">Export .md</button>
+          </div>
+        </div>
+
+        <div id="tab-sources" class="tabpane">
+          <div id="src" class="sources"></div>
+        </div>
+
+        <div id="tab-chunks" class="tabpane">
+          <ol id="chunkList" class="chunks"></ol>
+        </div>
+      </section>
+    </main>
+
+    <!-- PREVIEW RAIL -->
+    <aside class="preview" id="preview" aria-label="Source preview">
+      <div class="panel" style="height:100%; display:flex; flex-direction:column;">
+        <div class="panel-h">Preview</div>
+        <div id="previewBody" class="muted" style="overflow:auto; white-space:normal; flex:1;">
+          Click a source to preview
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- SETTINGS DRAWER -->
+  <dialog id="settingsDlg">
+    <form method="dialog" class="sheet">
+      <h3>Settings</h3>
+      <label>Model
+        <select id="set-model" class="select" style="width:100%">
+          <option value="gpt-4.1" selected>gpt-4.1</option>
+          <option value="gpt-4o-mini">gpt-4o-mini</option>
+          <option value="gpt-o3">gpt-o3</option>
+        </select>
+      </label>
+      <label>Temperature
+        <input id="set-temp" type="range" min="0" max="1" step="0.1" value="0.2" />
+      </label>
+      <label>Max tokens
+        <input id="set-max" class="input" type="number" value="800" />
+      </label>
+      <menu style="display:flex; gap:.5rem; justify-content:flex-end">
+        <button value="cancel" class="btn btn-secondary">Close</button>
+        <button id="saveSettings" class="btn">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script>
+    // ===== Utilities =====
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const statusEl = document.getElementById('status');
+    const askBtn   = document.getElementById('ask');
+
+    function setStatus(state, text){
+      statusEl.dataset.state = state; // idle | indexing | ok | error
+      statusEl.textContent   = text;
+      statusEl.classList.remove('pill-good','pill-bad');
+      if (state === 'ok')    statusEl.classList.add('pill-good');
+      if (state === 'error') statusEl.classList.add('pill-bad');
+    }
+
+    async function postJSON(url, data) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+      });
+      const payload = await (async ()=>{ try { return await res.json(); } catch { return {}; } })();
+      if (!res.ok) throw new Error(payload.detail || payload.error || res.statusText || "Error");
+      return payload;
+    }
+
+    // ===== Reveal =====
+    const revealEls = document.querySelectorAll('.reveal, .answer');
+    revealEls.forEach(el => el.classList.add('reveal'));
+    const io = new IntersectionObserver((ents)=>{
+      ents.forEach(e => e.isIntersecting && e.target.classList.add('show'));
+    }, {threshold: 0.08});
+    revealEls.forEach(el => io.observe(el));
+
+    // ===== Tabs =====
+    document.querySelectorAll('.tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+        document.querySelectorAll('.tabpane').forEach(p=>p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    // ===== Settings Drawer =====
+    const dlg = document.getElementById('settingsDlg');
+    document.getElementById('settingsBtn').addEventListener('click', ()=> dlg.showModal());
+    document.getElementById('saveSettings').addEventListener('click', (e)=>{
+      e.preventDefault();
+      const s = {
+        model: document.getElementById('set-model').value,
+        temp:  parseFloat(document.getElementById('set-temp').value),
+        max:   parseInt(document.getElementById('set-max').value,10)
+      };
+      localStorage.setItem('ll_settings', JSON.stringify(s));
+      dlg.close();
+      // Optional: fire-and-forget to backend if you support /settings
+      // fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(s)});
+      refreshStats(); // in case model display changes
+    });
+    // Load saved settings
+    (function loadSettings(){
+      try{
+        const s = JSON.parse(localStorage.getItem('ll_settings')||'{}');
+        if (s.model) document.getElementById('set-model').value = s.model;
+        if (typeof s.temp === 'number') document.getElementById('set-temp').value = s.temp;
+        if (typeof s.max === 'number') document.getElementById('set-max').value = s.max;
+      } catch {}
+    })();
+
+    // ===== Stats (optional) =====
+    async function refreshStats(){
+      try{
+        const r = await fetch('/stats');
+        if (!r.ok) return;
+        const s = await r.json();
+        if (s.files !== undefined)  document.getElementById('m-files').textContent = s.files;
+        if (s.chunks !== undefined) document.getElementById('m-chunks').textContent = s.chunks;
+        const saved = JSON.parse(localStorage.getItem('ll_settings')||'{}');
+        document.getElementById('m-model').textContent = saved.model || s.model || '—';
+      }catch{}
+    }
+    refreshStats();
+
+    // ===== Reindex =====
+    document.getElementById('reindex').onclick = async () => {
+      setStatus('indexing','indexing…');
+      try {
+        const r = await postJSON('/reindex', {});
+        setStatus('ok', `indexed ${r.chunks} chunks`);
+        refreshStats();
+      } catch (e) {
+        setStatus('error','error');
+        alert(e.message);
+      }
+    };
+
+    // ===== Dropzone / Upload =====
+    const dz = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+
+    uploadBtn.addEventListener('click', ()=> fileInput.click());
+
+    ;['dragenter','dragover'].forEach(evt=>{
+      dz.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+    });
+    ;['dragleave','drop'].forEach(evt=>{
+      dz.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag'); });
+    });
+    dz.addEventListener('drop', (e)=>{
+      const files = [...e.dataTransfer.files];
+      if (files.length) uploadFiles(files);
+    });
+    fileInput.addEventListener('change', ()=>{
+      const files = [...fileInput.files];
+      if (files.length) uploadFiles(files);
+    });
+
+    async function uploadFiles(files){
+      const fd = new FormData();
+      files.forEach(f => fd.append('files', f));
+      try{
+        const res = await fetch('/upload', { method:'POST', body: fd });
+        if (!res.ok) throw new Error('Upload failed');
+        // Auto reindex after upload
+        document.getElementById('reindex').click();
+      }catch(e){
+        alert(e.message);
+      }
+    }
+
+    // ===== History (last 10 unique) =====
+    function addHistory(q){
+      const list = JSON.parse(localStorage.getItem('ll_history')||'[]');
+      list.unshift(q);
+      const trimmed = [...new Set(list)].slice(0,10);
+      localStorage.setItem('ll_history', JSON.stringify(trimmed));
+      renderHistory();
+    }
+    function renderHistory(){
+      const list = JSON.parse(localStorage.getItem('ll_history')||'[]');
+      const ul = document.getElementById('history');
+      ul.innerHTML = list.map(q=>`<li><button class="chip" data-q="${q}">${q}</button></li>`).join('');
+      ul.querySelectorAll('button').forEach(b=> b.onclick = ()=>{
+        document.getElementById('query').value = b.dataset.q;
+        document.getElementById('ask').click();
+      });
+    }
+    renderHistory();
+
+    // ===== Persona chips (save selection) =====
+    const personaChips = document.getElementById('personaChips');
+    personaChips.querySelectorAll('input[name="p"]').forEach(r=>{
+      r.addEventListener('change', ()=> localStorage.setItem('ll_persona', r.value));
+    });
+    (function loadPersona(){
+      const saved = localStorage.getItem('ll_persona');
+      if (saved){
+        const radio = personaChips.querySelector(`input[value="${saved}"]`);
+        if (radio) radio.checked = true;
+      }
+    })();
+
+    // ===== Ask flow + Source Preview =====
+    document.getElementById('ask').onclick = ask;
+    document.getElementById('query').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') ask();
+    });
+
+    async function ask(){
+      const q   = document.getElementById('query').value.trim();
+      const out = document.getElementById('out');
+      const src = document.getElementById('src');
+      const persona = localStorage.getItem('ll_persona') || 'neutral';
+      if (!q) return;
+
+      // UI prep
+      out.style.display = 'block';
+      out.classList.remove('show');
+      out.textContent = 'Thinking…';
+      src.innerHTML = '';
+      // Switch to Answer tab if needed
+      document.querySelector('.tab[data-tab="answer"]').click();
+
+      try{
+        const r = await postJSON('/ask', { query: q, persona });
+        out.textContent = r.answer || '';
+        requestAnimationFrame(()=> out.classList.add('show'));
+
+        // Render sources as clickable preview targets
+        const sources = Array.isArray(r.sources) ? r.sources : [];
+        src.innerHTML = sources.map(s =>
+          `<button class="src-item" data-ref="${encodeURIComponent(s.ref)}" title="Click to preview">
+            <strong>${escapeHtml(s.ref)}</strong><br/><span class="muted">${escapeHtml(s.preview || '')}</span>
+          </button>`
+        ).join('') || '<div class="muted">No sources returned.</div>';
+
+        // Populate Chunks tab with refs only (optional)
+        const chunkList = document.getElementById('chunkList');
+        chunkList.innerHTML = sources.map(s => `<li>${escapeHtml(s.ref)}</li>`).join('');
+
+        addHistory(q);
+      } catch(e){
+        out.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    // Source preview click
+    document.getElementById('src').addEventListener('click', async (e)=>{
+      const el = e.target.closest('.src-item');
+      if (!el) return;
+      const ref = el.getAttribute('data-ref');
+      const previewBody = document.getElementById('previewBody');
+      previewBody.innerHTML = '<span class="muted">Loading preview…</span>';
+      try{
+        const r = await fetch(`/preview?ref=${ref}`);
+        if (!r.ok) throw new Error('Preview failed');
+        const html = await r.text();
+        previewBody.innerHTML = html;
+      }catch(err){
+        previewBody.innerHTML = `<span class="muted">Preview unavailable: ${escapeHtml(err.message)}</span>`;
+      }
+    });
+
+    // Copy & Export
+    document.getElementById('copyAnswer').addEventListener('click', async ()=>{
+      const text = document.getElementById('out')?.textContent || '';
+      try { await navigator.clipboard.writeText(text); } catch {}
+    });
+    document.getElementById('exportMd').addEventListener('click', ()=>{
+      const text = document.getElementById('out')?.textContent || '';
+      const blob = new Blob([`# Answer\n\n${text}\n`], {type:'text/markdown'});
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), {href:url, download:'answer.md'});
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    // Button ripple (tiny dopamine)
+    if (askBtn && !prefersReduced){
+      askBtn.addEventListener('click', (e)=>{
+        const r = askBtn.getBoundingClientRect();
+        askBtn.style.setProperty('--x', (e.clientX - r.left) + 'px');
+        askBtn.style.setProperty('--y', (e.clientY - r.top) + 'px');
+        askBtn.classList.remove('rippling'); void askBtn.offsetWidth; askBtn.classList.add('rippling');
+        setTimeout(()=>askBtn.classList.remove('rippling'), 500);
+      });
+    }
+
+    // Helpers
+    function escapeHtml(s=''){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    // Periodic stats refresh (optional)
+    setInterval(refreshStats, 15000);
+  </script>
+</body>
+</html>
